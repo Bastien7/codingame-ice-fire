@@ -23,7 +23,7 @@ enum class CaseType {
     VOID, NEUTRAL, ALLY_DISABLED, ALLY_ENABLED, ENEMY_DISABLED, ENEMY_ENABLED
 }
 
-data class Case(val position: Point, val type: CaseType) {
+data class Case(val position: Point, var type: CaseType) {
     fun adjacentCase(game: Game): List<Case> {
         return listOf(this.position.down, this.position.up, this.position.left, this.position.right)
             .filter { it.x in 0..11 && it.y in 0..11 }
@@ -37,13 +37,15 @@ data class Unit(val id: Int, var level: Int = 1, var position: Point, var isRead
 
 data class Building(val position: Point, val type: BuildingType, val owner: Player)
 
-data class MineSpot(val position: Point)
+data class MineSpot(val position: Point, var targetedBy: Unit? = null)
 
 data class Game(val myPlayer: Player = Player(), val enemy: Player = Player(), var cases: List<List<Case>> = listOf(), var buildings: List<Building> = listOf(), val mineSpots: List<MineSpot>) {
     fun getOrNull(point: Point): Case? = cases.getOrNull(point.y)?.getOrNull(point.x)
     fun getOrNull(x: Int, y: Int): Case? = cases.getOrNull(y)?.getOrNull(x)
     fun get(point: Point): Case = cases[point.y][point.x]
     fun get(building: Building): Case = cases[building.position.y][building.position.x]
+    fun anyUnitOn(case: Case) = anyUnitOn(case.position)
+    fun anyUnitOn(position: Point) = (myPlayer.units + enemy.units).any { it.position == position }
 
     fun update(input: Scanner) {
         myPlayer.gold = input.nextInt()
@@ -65,17 +67,16 @@ data class Game(val myPlayer: Player = Player(), val enemy: Player = Player(), v
                     'x' -> ENEMY_DISABLED
                     else -> error("What is this case type? ${line[x]}")
                 }
-                System.err.print(line[x])
+                //System.err.print(line[x])
                 Case(Point(x, y), caseType)
             }
         }
-        System.err.println()
+        //System.err.println()
 
         this.buildings = (0 until input.nextInt()).map {
             val ownerInt = input.nextInt()
-            debug("owner int: $ownerInt")
             val owner = if (ownerInt == 0) myPlayer else enemy
-            val buildingType = when(input.nextInt()) {
+            val buildingType = when (input.nextInt()) {
                 0 -> BuildingType.QG
                 1 -> BuildingType.MINE
                 2 -> BuildingType.TOWER
@@ -188,28 +189,35 @@ fun Unit.optimoveTo(game: Game, case: Case): Case {
 
 
 fun Unit.findClosestNeutralMine(game: Game): MineSpot? {
-    return game.mineSpots.filter { mine -> game.get(mine.position).type == NEUTRAL }.minBy { it.position.distanceTo(this.position) }
+    return game.mineSpots.filter { mine -> game.get(mine.position).type == NEUTRAL && !game.anyUnitOn(mine.position) && mine.targetedBy == null}.minBy { it.position.distanceTo(this.position) }
 }
 
 fun Unit.findClosestNeutralCase(game: Game, enemyQG: Building): Case {
-    return game.cases.flatten().filter { it.type == NEUTRAL }.minBy { it.position.distanceTo(this.position) }
+     val closestNeutralCases = game.cases.flatten().filter { it.type == NEUTRAL }
+        .groupBy { it.position.distanceTo(this.position) }
+        .minBy { it.key }?.value
+
+    debug("$id => ${closestNeutralCases?.map { it.position }}")
+
+     return closestNeutralCases?.maxBy { game.myPlayer.units.sumBy { it.position.distanceTo(this.position) } }
         ?: game.get(enemyQG)
 }
 
 fun Game.findMineSpotAvailable(): MineSpot? {
-    return this.mineSpots.firstOrNull { mine -> this.get(mine.position).type == ALLY_ENABLED && this.buildings.none { it.position == mine.position && it.owner == this.myPlayer } }
+    return this.mineSpots.firstOrNull { mine -> this.get(mine.position).type == ALLY_ENABLED && !anyUnitOn(mine.position) && this.buildings.none { it.position == mine.position && it.owner == this.myPlayer } }
 }
 
-fun Game.findCaseToTrain(myPlayerUnits: List<Unit>, enemyQG: Building): MutableList<Case> {
+fun Game.findCaseToTrain(enemyQG: Building): MutableList<Case> {
     return this.cases.asSequence().flatten()
-        .filter { case -> case.type == ALLY_ENABLED && myPlayerUnits.none { it.position == case.position } }
+        .filter { case -> case.type == ALLY_ENABLED }
         .map { it.adjacentCase(this) }
         .flatten()
+        .filter { case -> case.type != VOID && myPlayer.units.none { it.position == case.position } && this.buildings.none { it.position == case.position } }
         .sortedBy { it.position.distanceTo(enemyQG.position) }
         .toMutableList()
 }
 
-fun Game.findCaseToBuild(myPlayerUnits: List<Unit>, myTowers: List<Building>, myPlayerQG: Building): Case? {
+fun Game.findCaseToBuildTower(myTowers: List<Building>, target: Building): Case? {
     val towerCases = myTowers.flatMap {
         val x = it.position.x
         val y = it.position.y
@@ -227,8 +235,8 @@ fun Game.findCaseToBuild(myPlayerUnits: List<Unit>, myTowers: List<Building>, my
     }
     debug("Tower case count: ${towerCases.size}")
     return (this.cases.flatten() - towerCases)
-        .filter { case -> case.type == ALLY_ENABLED && myPlayerUnits.noneIn(case) && this.buildings.noneOn(case) }
-        .sortedBy { it.position.distanceTo(myPlayerQG.position) }
+        .filter { case -> case.type == ALLY_ENABLED && !anyUnitOn(case) && this.buildings.noneOn(case) }
+        .sortedBy { it.position.distanceTo(target.position) }
         .firstOrNull()
 }
 
@@ -245,7 +253,13 @@ fun List<Unit>.attack(attackableUnits: List<Unit>, enemyQG: Building) {
 
 fun List<Unit>.conquer(mines: List<Building>, enemyQG: Building) {
     if (mines.isNotEmpty()) {
-        this.forEach { hunter -> hunter.attack(mines.minBy { it.position.distanceTo(hunter.position) }!!) }
+        val sortedUnits = this.sortedBy { it.position.distanceTo(enemyQG.position) }
+        val groups = sortedUnits.groupBy { unit ->
+            val closestMine = mines.minBy { it.position.distanceTo(unit.position) }!!
+            unit.position.distanceTo(closestMine.position) < unit.position.distanceTo(enemyQG.position)
+        }
+        groups[true]?.forEach { hunter -> hunter.attack(mines.minBy { it.position.distanceTo(hunter.position) }!!) }
+        groups[false]?.forEach { it.attack(enemyQG) }
     } else {
         this.sortedBy { it.position.distanceTo(enemyQG.position) }.forEach { it.attack(enemyQG) }
     }
@@ -255,39 +269,74 @@ fun Unit.explore(game: Game, enemyQG: Building) {
     val closestNeutralMine = this.findClosestNeutralMine(game)
     if (closestNeutralMine != null) {
         this.move(closestNeutralMine)
+        closestNeutralMine.targetedBy = this
     } else {
-        this.move(this.findClosestNeutralCase(game, enemyQG))
+        val neutralCase = this.findClosestNeutralCase(game, enemyQG)
+        this.move(neutralCase)
+        neutralCase.type = ALLY_ENABLED
     }
 }
 
 
-fun main(args: Array<String>) {
-    val input = Scanner(System.`in`)
+abstract class Strategy(val game: Game) {
+    abstract fun play(turn: Int)
+}
+abstract class OptionalStrategy(game: Game) : Strategy(game) {
+    abstract fun isNeeded(): Boolean
+}
 
-    val mineSpots = (0 until input.nextInt()).map {
-        val x = input.nextInt()
-        val y = input.nextInt()
-        MineSpot(Point(x, y))
+class StrategyConquer(game: Game, private val explorers: MutableList<Unit> = mutableListOf()) : Strategy(game) {
+    override fun play(turn: Int) {
+        val myPlayer = game.myPlayer
+        val playerQG = game.buildings.first { it.owner == myPlayer && it.type == BuildingType.QG }
+        val myPlayerMines = game.buildings.filter { it.owner == myPlayer && it.type == BuildingType.MINE }
+        val enemyQG = game.buildings.first { it.owner == game.enemy && it.type == BuildingType.QG }
+
+        val mineToBuild = game.findMineSpotAvailable()
+
+        if (mineToBuild != null && explorers.size >= 3 && myPlayer.gold >= 20 + myPlayerMines.size * 4) {
+            build(mineToBuild)
+            myPlayer.gold -= 20 + myPlayerMines.size * 4
+            myPlayer.income += 4
+        }
+
+        myPlayer.units.forEach {
+            //it.explore(game, enemyQG)
+            val neutralCase = it.findClosestNeutralCase(game, enemyQG)
+            it.move(neutralCase)
+            it.position = neutralCase.position
+            neutralCase.type = ALLY_ENABLED
+        }
+
+        val casesToTrain = game.findCaseToTrain(enemyQG)
+
+        while (explorers.size < 7 && casesToTrain.isNotEmpty() && myPlayer.gold >= 10) {
+            val caseToTrain = casesToTrain.first()
+            train(1, caseToTrain)
+            caseToTrain.type = ALLY_ENABLED
+            casesToTrain.remove(caseToTrain)
+            myPlayer.gold -= 10
+            myPlayer.income -= 1
+        }
+
+        game.mineSpots.forEach { it.targetedBy = null }
     }
+}
 
-    val game = Game(mineSpots = mineSpots)
-    val myPlayer = game.myPlayer
-    val enemy = game.enemy
-
-    var turn = 0
-
-    // game loop
-    while (true) {
-        game.update(input)
+class StrategyAttack(game: Game) : Strategy(game) {
+    override fun play(turn: Int) {
+        val myPlayer = game.myPlayer
+        val enemy = game.enemy
         val playerQG = game.buildings.first { it.owner == myPlayer && it.type == BuildingType.QG }
         val myPlayerMines = game.buildings.filter { it.owner == myPlayer && it.type == BuildingType.MINE }
         val myPlayerTowers = game.buildings.filter { it.owner == myPlayer && it.type == BuildingType.TOWER }
-        val enemyQG = game.buildings.first { it.owner == enemy && it.type == BuildingType.QG }
-        val enemyMines = game.buildings.filter { it.owner == enemy && it.type == BuildingType.MINE }
+        val enemyQG = game.buildings.first { it.owner == game.enemy && it.type == BuildingType.QG }
+        val enemyMines = game.buildings.filter { it.owner == game.enemy && it.type == BuildingType.MINE }
 
-        val casesToTrain = game.findCaseToTrain(myPlayer.units, enemyQG)
-        val casesToBuildTower = game.findCaseToBuild(myPlayer.units, myPlayerTowers, playerQG)
+        val casesToTrain = game.findCaseToTrain(enemyQG)
+        val casesToBuildTower = game.findCaseToBuildTower(myPlayerTowers, enemyQG)
         val mineToBuild = game.findMineSpotAvailable()
+
 
         val unitsLevel1 = myPlayer.units.filter { it.level == 1 && it.isReady }
         val explorer = unitsLevel1.firstOrNull()
@@ -302,6 +351,7 @@ fun main(args: Array<String>) {
         if (mineToBuild != null && myPlayer.gold >= 20 + myPlayerMines.size * 4) {
             build(mineToBuild)
             myPlayer.gold -= 20 + myPlayerMines.size * 4
+            myPlayer.income += 4
         }
 
         if (casesToBuildTower != null && turn > 10 && myPlayer.gold >= 15 && myPlayer.income >= 5) {
@@ -333,7 +383,91 @@ fun main(args: Array<String>) {
         unitsLevel1Attackers.conquer(enemyMines, enemyQG)
         explorer?.explore(game, enemyQG)
         debug("My explorer is ${explorer?.id}")
+    }
+}
 
+class StrategyTowerDefense(game: Game) : OptionalStrategy(game) {
+    override fun isNeeded(): Boolean {
+        val playerQG = game.buildings.first { it.owner == game.myPlayer && it.type == BuildingType.QG }
+        return game.enemy.units.any { it.position .distanceTo(playerQG.position) <= 5 }
+    }
+
+    override fun play(turn: Int) {
+        val myPlayer = game.myPlayer
+        val playerQG = game.buildings.first { it.owner == myPlayer && it.type == BuildingType.QG }
+        val myPlayerTowers = game.buildings.filter { it.owner == myPlayer && it.type == BuildingType.TOWER }
+
+        val casesToBuildTower = game.findCaseToBuildTower(myPlayerTowers, playerQG)
+
+        if(casesToBuildTower != null) {
+            buildTower(casesToBuildTower)
+        }
+    }
+}
+
+class StrategyKillLevel3(game: Game) : OptionalStrategy(game) {
+    override fun isNeeded(): Boolean {
+        return game.enemy.units.any { it.level == 3 }
+    }
+
+    override fun play(turn: Int) {
+        val guysToKill = game.enemy.units.filter { it.level == 3 }
+        val killedGuys = mutableListOf<Unit>()
+
+        guysToKill.forEach { enemyUnit ->
+            val safeCases = game.get(enemyUnit.position).adjacentCase(game).filter { it.type == ENEMY_ENABLED && !game.anyUnitOn(it) }
+            if (game.myPlayer.gold >= 10 && safeCases.size == 1 && safeCases.first().adjacentCase(game).any { it.type == ALLY_ENABLED }) {
+                val caseToTrain = safeCases.first()
+                val blockedByTower = game.buildings.any { it.owner == game.enemy && it.type == BuildingType.TOWER && it.position.distanceTo(caseToTrain.position) <= 1 }
+
+                if (!blockedByTower) {
+                    train(1, caseToTrain)
+                    game.myPlayer.gold -= 10
+                    killedGuys.add(enemyUnit)
+                    debug("kill that guy3 at ${caseToTrain.position}")
+                } else {
+                    debug("${caseToTrain.position} is blocked by a enemy tower")
+                }
+            }
+        }
+
+        (guysToKill - killedGuys).forEach { enemyUnit ->
+            val enemyCase = game.get(enemyUnit.position)
+            val canPopOnEnemy = enemyCase.adjacentCase(game).any { it.type == ALLY_ENABLED }
+            if (game.myPlayer.gold >= 30 && canPopOnEnemy) {
+                train(3, enemyCase)
+                game.myPlayer.gold -= 30
+                debug("kill that guy3 at ${enemyCase.position}")
+            }
+        }
+    }
+}
+
+fun main(args: Array<String>) {
+    val input = Scanner(System.`in`)
+
+    val mineSpots = (0 until input.nextInt()).map {
+        val x = input.nextInt()
+        val y = input.nextInt()
+        MineSpot(Point(x, y))
+    }
+
+    val game = Game(mineSpots = mineSpots)
+    var mainStrategy: Strategy = StrategyConquer(game)
+    var turn = 0
+
+    // game loop
+    while (true) {
+        if(turn > 5)
+            mainStrategy = StrategyAttack(game)
+
+        game.update(input)
+        debug("I have ${game.myPlayer.gold} golds")
+
+        listOf(StrategyKillLevel3(game), StrategyTowerDefense(game))
+            .filter { it.isNeeded() }.forEach { it.play(turn) }
+
+        mainStrategy.play(turn)
 
         waitForLife()
         println()
