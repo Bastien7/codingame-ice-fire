@@ -344,7 +344,7 @@ abstract class Strategy(val game: Game) {
     abstract fun play(turn: Int)
 }
 
-abstract class OptionalStrategy(game: Game) : Strategy(game) {
+abstract class OptionalStrategy(game: Game, val name: String) : Strategy(game) {
     abstract fun isNeeded(): Boolean
 }
 
@@ -393,7 +393,6 @@ class StrategyAttack(game: Game) : Strategy(game) {
         val myPlayerMines = game.buildings.filter { it.owner == myPlayer && it.type == MINE }
         val myPlayerTowers = game.buildings.filter { it.owner == myPlayer && it.type == TOWER }
         val enemyQG = game.buildings.first { it.owner == game.enemy && it.type == QG }
-        val enemyMines = game.buildings.filter { it.owner == game.enemy && it.type == MINE }
 
         val casesToBuildTower = game.findCaseToBuildTowerAggressive(myPlayerTowers, enemyQG)
         val mineToBuild = game.findMineSpotAvailable()
@@ -470,7 +469,7 @@ class StrategyAttack(game: Game) : Strategy(game) {
     }
 }
 
-class StrategyInstantKill(game: Game) : OptionalStrategy(game) {
+class StrategyInstantKill(game: Game) : OptionalStrategy(game, "instant kill") {
     override fun isNeeded(): Boolean {
         val enemyQG = game.buildings.first { it.owner == game.enemy && it.type == QG }
         return game.myPlayer.units.any { it.position.distanceTo(enemyQG.position) <= (game.myPlayer.gold / 10) }
@@ -482,7 +481,6 @@ class StrategyInstantKill(game: Game) : OptionalStrategy(game) {
         val closestUnit = game.myPlayer.units.map { it.position.distanceTo(enemyQG.position) }.max() ?: 0
 
         (0..closestUnit).forEach {
-            //debug("cases: ${game.findCaseToTrainLevel1(enemyQG).map { "${it.position.x} ${it.position.y}" }}")
             val case = game.findCaseToTrainLevel1(enemyQG).minBy { it.position.squareDistanceTo(enemyQG.position) }
             debug("best case: ${case?.position?.x} ${case?.position?.y}")
             if (case != null) {
@@ -494,7 +492,7 @@ class StrategyInstantKill(game: Game) : OptionalStrategy(game) {
     }
 }
 
-class StrategyTowerDefense(game: Game) : OptionalStrategy(game) {
+class StrategyTowerDefense(game: Game) : OptionalStrategy(game, "tower defense") {
     override fun isNeeded(): Boolean {
         val playerQG = game.buildings.first { it.owner == game.myPlayer && it.type == QG }
         return game.enemy.units.any { it.position.distanceTo(playerQG.position) <= ((game.enemy.income + game.enemy.gold) / 10) }
@@ -513,7 +511,7 @@ class StrategyTowerDefense(game: Game) : OptionalStrategy(game) {
     }
 }
 
-class StrategyKillLevel3(game: Game) : OptionalStrategy(game) {
+class StrategyKillLevel3(game: Game) : OptionalStrategy(game, "kill level3") {
     override fun isNeeded(): Boolean {
         return game.enemy.units.any { it.level == 3 }
     }
@@ -580,8 +578,10 @@ fun main(args: Array<String>) {
         game.update(input)
         debug("I have ${game.myPlayer.gold} golds")
 
-        listOf(StrategyInstantKill(game), StrategyKillLevel3(game), StrategyTowerDefense(game))
-            .filter { it.isNeeded() }.forEach { it.play(turn) }
+        listOf(StrategyInstantKill(game), StrategyKillLevel3(game), StrategyTowerDefense(game)).filter { it.isNeeded() }.forEach {
+            debug("Apply strategy ${it.name}")
+            it.play(turn)
+        }
 
         mainStrategy.play(turn)
 
