@@ -221,6 +221,27 @@ fun Game.findCaseToTrainLevel1(enemyQG: Building): MutableList<Case> {
         .toMutableList()
 }
 
+fun Game.findCaseToTrainLevel2(enemyQG: Building): List<Case> {
+    return this.cases.asSequence().flatten()
+        .filter { case -> case.type == ALLY_ENABLED }
+        .map { it.adjacentCase(this) }
+        .flatten().distinct()
+        .filter { case -> case.type != VOID && this.enemy.units.any { it.level == 1 && it.position == case.position } }
+        .sortedBy { it.position.distanceTo(enemyQG.position) }
+        .toList()
+}
+
+fun Game.findCaseToTrainLevel3(enemyQG: Building): List<Case> {
+    return this.cases.asSequence().flatten()
+        .filter { case -> case.type == ALLY_ENABLED }
+        .map { it.adjacentCase(this) }
+        .flatten().distinct()
+        .filter { case -> case.type != VOID && this.enemy.units.any { it.position == case.position } }
+        .sortedBy { it.position.distanceTo(enemyQG.position) }
+        .toList()
+}
+
+
 fun Game.findCaseToBuildTower(myTowers: List<Building>, target: Building): Case? {
     val towerCases = myTowers.flatMap {
         val x = it.position.x
@@ -321,8 +342,8 @@ class StrategyConquer(game: Game, private val explorers: MutableList<Unit> = mut
         while (explorers.size < 7 && casesToTrain.isNotEmpty() && myPlayer.gold >= 10) {
             val caseToTrain = casesToTrain.first()
             train(1, caseToTrain)
+            myPlayer.units.add(Unit(-1, 1, caseToTrain.position))
             caseToTrain.type = ALLY_ENABLED
-            casesToTrain.remove(caseToTrain)
             myPlayer.gold -= 10
             myPlayer.income -= 1
             casesToTrain = game.findCaseToTrainLevel1(enemyQG)
@@ -352,44 +373,67 @@ class StrategyAttack(game: Game) : Strategy(game) {
         val unitsLevel2 = myPlayer.units.filter { it.level == 2 && it.isReady }
         val unitsLevel3 = myPlayer.units.filter { it.level == 3 && it.isReady }
 
+        debug("my units: ${myPlayer.units}")
+
         val enemyUnitsLevel1 = enemy.units.filter { it.level == 1 && it.isReady }
         val enemyUnitsLevel2 = enemy.units.filter { it.level == 2 && it.isReady }
-        val enemyUnitsLevel3 = enemy.units.filter { it.level == 3 && it.isReady }
 
+        unitsLevel3.attack(enemyUnitsLevel2, enemyQG)
+        unitsLevel2.attack(enemyUnitsLevel1, enemyQG)
+        unitsLevel1Attackers.conquer(enemyMines, enemyQG)
+        explorer?.explore(game, enemyQG)
+
+        var casesToTrainLevel2 = game.findCaseToTrainLevel2(enemyQG)
+        debug("${casesToTrainLevel2.size} cases to train level2")
+        //Level 2
+        while (casesToTrainLevel2.isNotEmpty() && myPlayer.gold >= 20 && myPlayer.income > 4) {
+            train(2, casesToTrainLevel2.first())
+            myPlayer.units.add(Unit(-1, 2, casesToTrainLevel2.first().position))
+            myPlayer.gold -= 20
+            myPlayer.income -= 4
+            casesToTrainLevel2 = game.findCaseToTrainLevel2(enemyQG)
+            debug("then ${casesToTrainLevel2.size} cases to train level2")
+        }
+
+        //Tower
+        if (casesToBuildTower != null && myPlayer.gold >= 15 && myPlayer.income >= 5) {
+            buildTower(casesToBuildTower)
+            game.buildings = game.buildings.toMutableList() + Building(casesToBuildTower.position, TOWER, myPlayer)
+            myPlayer.gold -= 15
+        }
+
+        //Mine
         if (mineToBuild != null && myPlayer.gold >= 20 + myPlayerMines.size * 4) {
             build(mineToBuild)
             myPlayer.gold -= 20 + myPlayerMines.size * 4
             myPlayer.income += 4
         }
 
-        if (casesToBuildTower != null && turn > 10 && myPlayer.gold >= 15 && myPlayer.income >= 5) {
-            buildTower(casesToBuildTower)
-        }
+        val casesToTrainLevel3 = game.findCaseToTrainLevel3(enemyQG)
+        debug("${casesToTrainLevel2.size} cases to train level3")
 
-        if (casesToTrain.isNotEmpty() && myPlayer.gold >= 70 && myPlayer.income >= 35) {
-            train(3, casesToTrain.first())
-            casesToTrain.remove(casesToTrain.first())
+        //Level 3
+        if (casesToTrainLevel3.isNotEmpty() && myPlayer.gold >= 50 && myPlayer.income >= 35) {
+            train(3, casesToTrainLevel3.first())
+            myPlayer.units.add(Unit(-1, 3, casesToTrainLevel3.first().position))
             myPlayer.gold -= 30
             myPlayer.income -= 20
+            //casesToTrainLevel3 = game.findCaseToTrainLevel3(enemyQG)
+            debug("then ${casesToTrainLevel2.size} cases to train level3")
         }
 
-        while (casesToTrain.isNotEmpty() && myPlayer.gold >= 20 && myPlayer.income > 4) {
-            train(2, casesToTrain.first())
-            casesToTrain.remove(casesToTrain.first())
-            myPlayer.gold -= 20
-            myPlayer.income -= 4
-        }
+        var casesToTrain = game.findCaseToTrainLevel1(enemyQG)
+        debug("${casesToTrain.size} to train level1's")
+        //Level 1
         while (casesToTrain.isNotEmpty() && myPlayer.gold >= 10) {
             train(1, casesToTrain.first())
-            casesToTrain.remove(casesToTrain.first())
+            myPlayer.units.add(Unit(-1, 1, casesToTrain.first().position))
             myPlayer.gold -= 10
             myPlayer.income -= 1
+            casesToTrain = game.findCaseToTrainLevel1(enemyQG)
+            debug("then ${casesToTrainLevel2.size} cases to train level1")
         }
 
-        unitsLevel3.attack(enemyUnitsLevel2, enemyQG)
-        unitsLevel2.attack(enemyUnitsLevel1, enemyQG)
-        unitsLevel1Attackers.conquer(enemyMines, enemyQG)
-        explorer?.explore(game, enemyQG)
         debug("My explorer is ${explorer?.id}")
     }
 }
@@ -419,7 +463,12 @@ class StrategyKillLevel3(game: Game) : OptionalStrategy(game) {
     }
 
     override fun play(turn: Int) {
-        val guysToKill = game.enemy.units.filter { it.level == 3 }
+        val guysToKill = game.enemy.units
+            .filter {
+                it.level == 3 && game.get(it.position).adjacentCase(game).any { case ->
+                    game.myPlayer.units.find { it.position == case.position } != null || game.buildings.find { it.position == case.position && it.owner == game.myPlayer } != null
+                }
+            }
         val killedGuys = mutableListOf<Unit>()
 
         guysToKill.forEach { enemyUnit ->
