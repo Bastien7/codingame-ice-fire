@@ -58,7 +58,6 @@ data class Game(val myPlayer: Player = Player(), val enemy: Player = Player(), v
 
         cases = (0 until 12).map { y ->
             val line = input.next()
-            System.err.println()
             (0 until 12).map { x ->
                 val caseType = when (line[x]) {
                     '#' -> VOID
@@ -69,11 +68,9 @@ data class Game(val myPlayer: Player = Player(), val enemy: Player = Player(), v
                     'x' -> ENEMY_DISABLED
                     else -> error("What is this case type? ${line[x]}")
                 }
-                //System.err.print(line[x])
                 Case(Point(x, y), caseType)
             }
         }
-        //System.err.println()
 
         this.buildings = (0 until input.nextInt()).map {
             val ownerInt = input.nextInt()
@@ -242,8 +239,8 @@ fun Game.findCaseToTrainLevel3(enemyQG: Building): List<Case> {
 }
 
 
-fun Game.findCaseToBuildTower(myTowers: List<Building>, target: Building): Case? {
-    val towerCases = myTowers.flatMap {
+fun Game.findCaseToBuildTower(target: Building): Case? {
+    val towerCases = this.buildings.filter { it.owner == myPlayer && it.type == TOWER }.flatMap {
         val x = it.position.x
         val y = it.position.y
 
@@ -501,9 +498,8 @@ class StrategyTowerDefense(game: Game) : OptionalStrategy(game, "tower defense")
     override fun play(turn: Int) {
         val myPlayer = game.myPlayer
         val playerQG = game.buildings.first { it.owner == myPlayer && it.type == QG }
-        val myPlayerTowers = game.buildings.filter { it.owner == myPlayer && it.type == TOWER }
 
-        val casesToBuildTower = game.findCaseToBuildTower(myPlayerTowers, playerQG)
+        val casesToBuildTower = game.findCaseToBuildTower(playerQG)
 
         if (casesToBuildTower != null) {
             buildTower(casesToBuildTower)
