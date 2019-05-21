@@ -264,6 +264,29 @@ fun Game.findCaseToBuildTower(myTowers: List<Building>, target: Building): Case?
         .firstOrNull()
 }
 
+fun Game.findCaseToBuildTowerAggressive(myTowers: List<Building>, target: Building): Case? {
+    val towerCases = myTowers.flatMap {
+        val x = it.position.x
+        val y = it.position.y
+
+        listOfNotNull(
+            this.getOrNull(x - 1, y - 1),
+            this.getOrNull(x, y - 1),
+            this.getOrNull(x + 1, y - 1),
+            this.getOrNull(x - 1, y),
+            this.getOrNull(x + 1, y),
+            this.getOrNull(x - 1, y + 1),
+            this.getOrNull(x, y + 1),
+            this.getOrNull(x + 1, y + 1)
+        )
+    }
+    return (this.cases.flatten() - towerCases)
+        .filter { case -> case.type == ALLY_ENABLED && !anyUnitOn(case) && this.buildings.noneOn(case) && case.adjacentCase(this).any { it.type == ENEMY_ENABLED } }
+        .sortedBy { it.position.distanceTo(target.position) }
+        .firstOrNull()
+}
+
+
 fun List<Unit>.noneIn(case: Case) = this.none { it.position == case.position }
 fun List<Building>.noneOn(case: Case) = this.none { it.position == case.position }
 
@@ -362,8 +385,7 @@ class StrategyAttack(game: Game) : Strategy(game) {
         val enemyQG = game.buildings.first { it.owner == game.enemy && it.type == QG }
         val enemyMines = game.buildings.filter { it.owner == game.enemy && it.type == MINE }
 
-        val casesToTrain = game.findCaseToTrain(enemyQG)
-        val casesToBuildTower = game.findCaseToBuildTower(myPlayerTowers, enemyQG)
+        val casesToBuildTower = game.findCaseToBuildTowerAggressive(myPlayerTowers, enemyQG)
         val mineToBuild = game.findMineSpotAvailable()
 
 
@@ -435,6 +457,30 @@ class StrategyAttack(game: Game) : Strategy(game) {
         }
 
         debug("My explorer is ${explorer?.id}")
+    }
+}
+
+class StrategyInstantKill(game: Game) : OptionalStrategy(game) {
+    override fun isNeeded(): Boolean {
+        val enemyQG = game.buildings.first { it.owner == game.enemy && it.type == QG }
+        return game.myPlayer.units.any { it.position.distanceTo(enemyQG.position) <= (game.myPlayer.gold / 10) }
+    }
+
+    override fun play(turn: Int) {
+        debug("instant kill that guy!")
+        val enemyQG = game.buildings.first { it.owner == game.enemy && it.type == QG }
+        val closestUnit = game.myPlayer.units.map { it.position.distanceTo(enemyQG.position) }.max() ?: 0
+
+        (0..closestUnit).forEach {
+            //debug("cases: ${game.findCaseToTrainLevel1(enemyQG).map { "${it.position.x} ${it.position.y}" }}")
+            val case = game.findCaseToTrainLevel1(enemyQG).minBy { it.position.squareDistanceTo(enemyQG.position) }
+            debug("best case: ${case?.position?.x} ${case?.position?.y}")
+            if (case != null) {
+                train(1, case)
+                game.myPlayer.units.add(Unit(-1, 1, case.position))
+                case.type = ALLY_ENABLED
+            }
+        }
     }
 }
 
@@ -524,7 +570,7 @@ fun main(args: Array<String>) {
         game.update(input)
         debug("I have ${game.myPlayer.gold} golds")
 
-        listOf(StrategyKillLevel3(game), StrategyTowerDefense(game))
+        listOf(StrategyInstantKill(game), StrategyKillLevel3(game), StrategyTowerDefense(game))
             .filter { it.isNeeded() }.forEach { it.play(turn) }
 
         mainStrategy.play(turn)
